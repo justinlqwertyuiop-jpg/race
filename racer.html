@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Simple 2D Racing Game</title>
+<style>
+  body { margin:0; background:#111; color:white; text-align:center; font-family:Arial; }
+  canvas { background:#222; display:block; margin:20px auto; border:2px solid #fff; }
+</style>
+</head>
+<body>
+
+<h2>Simple 2D Racing – You vs Bots</h2>
+<p>Arrow keys to drive</p>
+
+<canvas id="game" width="800" height="600"></canvas>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+const keys = { left:false, right:false, up:false, down:false };
+
+window.addEventListener("keydown", e=>{
+  if(e.key==="ArrowLeft") keys.left=true;
+  if(e.key==="ArrowRight") keys.right=true;
+  if(e.key==="ArrowUp") keys.up=true;
+  if(e.key==="ArrowDown") keys.down=true;
+});
+window.addEventListener("keyup", e=>{
+  if(e.key==="ArrowLeft") keys.left=false;
+  if(e.key==="ArrowRight") keys.right=false;
+  if(e.key==="ArrowUp") keys.up=false;
+  if(e.key==="ArrowDown") keys.down=false;
+});
+
+// Track (simple loop)
+const track = [
+  {x:150, y:150},
+  {x:650, y:150},
+  {x:650, y:450},
+  {x:150, y:450}
+];
+
+// Car factory
+function makeCar(color, x, y, angle){
+  return {
+    x, y, angle,
+    speed:0,
+    maxSpeed:4,
+    accel:0.15,
+    turnSpeed:0.05,
+    color,
+    targetPoint:0 // for bots
+  };
+}
+
+const player = makeCar("red", 200, 200, 0);
+const bots = [
+  makeCar("cyan", 220, 220, 0),
+  makeCar("yellow", 240, 240, 0),
+  makeCar("lime", 260, 260, 0)
+];
+
+// Distance helper
+function dist(a,b){
+  return Math.hypot(a.x-b.x, a.y-b.y);
+}
+
+// Update player
+function updatePlayer(){
+  if(keys.up) player.speed += player.accel;
+  if(keys.down) player.speed -= player.accel;
+  player.speed *= 0.98; // friction
+  if(player.speed > player.maxSpeed) player.speed = player.maxSpeed;
+  if(player.speed < -player.maxSpeed/2) player.speed = -player.maxSpeed/2;
+
+  if(keys.left) player.angle -= player.turnSpeed;
+  if(keys.right) player.angle += player.turnSpeed;
+
+  player.x += Math.cos(player.angle) * player.speed;
+  player.y += Math.sin(player.angle) * player.speed;
+}
+
+// Update bots (simple AI)
+function updateBots(){
+  bots.forEach(bot=>{
+    const target = track[bot.targetPoint];
+    const angleToTarget = Math.atan2(target.y - bot.y, target.x - bot.x);
+
+    // Turn toward target
+    let diff = angleToTarget - bot.angle;
+    diff = Math.atan2(Math.sin(diff), Math.cos(diff)); // normalize
+    bot.angle += diff * 0.05;
+
+    // Move forward
+    bot.speed += bot.accel;
+    if(bot.speed > bot.maxSpeed*0.8) bot.speed = bot.maxSpeed*0.8;
+    bot.x += Math.cos(bot.angle) * bot.speed;
+    bot.y += Math.sin(bot.angle) * bot.speed;
+
+    // Switch to next point
+    if(dist(bot, target) < 40){
+      bot.targetPoint = (bot.targetPoint + 1) % track.length;
+    }
+  });
+}
+
+// Draw track
+function drawTrack(){
+  ctx.strokeStyle = "#555";
+  ctx.lineWidth = 20;
+  ctx.beginPath();
+  ctx.moveTo(track[0].x, track[0].y);
+  for(let i=1;i<track.length;i++){
+    ctx.lineTo(track[i].x, track[i].y);
+  }
+  ctx.closePath();
+  ctx.stroke();
+}
+
+// Draw car
+function drawCar(car){
+  ctx.save();
+  ctx.translate(car.x, car.y);
+  ctx.rotate(car.angle);
+  ctx.fillStyle = car.color;
+  ctx.fillRect(-15, -8, 30, 16); // body
+  ctx.fillStyle = "black";
+  ctx.fillRect(-15, -10, 30, 4); // top
+  ctx.restore();
+}
+
+function loop(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  drawTrack();
+  updatePlayer();
+  updateBots();
+
+  drawCar(player);
+  bots.forEach(drawCar);
+
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+
+</body>
+</html>
