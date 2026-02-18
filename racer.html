@@ -1,151 +1,642 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>Simple 2D Racing Game</title>
-<style>
-  body { margin:0; background:#111; color:white; text-align:center; font-family:Arial; }
-  canvas { background:#222; display:block; margin:20px auto; border:2px solid #fff; }
-</style>
+  <meta charset="UTF-8">
+  <title>Racebot – Top‑Down Realistic Racing</title>
+  <style>
+    body {
+      margin: 0;
+      background: #111;
+      color: #fff;
+      font-family: Arial, sans-serif;
+      text-align: center;
+      user-select: none;
+    }
+    #wrap {
+      margin: 10px auto;
+      width: 900px;
+    }
+    h1 {
+      margin: 4px 0;
+      font-size: 22px;
+    }
+    #info {
+      font-size: 13px;
+      margin-bottom: 6px;
+      color: #ccc;
+    }
+    canvas {
+      background: #222;
+      border: 2px solid #fff;
+      display: block;
+      margin: 0 auto;
+    }
+    #hud {
+      margin-top: 6px;
+      font-size: 14px;
+    }
+    #hud span {
+      margin: 0 8px;
+    }
+  </style>
 </head>
 <body>
-
-<h2>Simple 2D Racing – You vs Bots</h2>
-<p>Arrow keys to drive</p>
-
-<canvas id="game" width="800" height="600"></canvas>
+<div id="wrap">
+  <h1>Racebot – Top‑Down Realistic Racing</h1>
+  <div id="info">
+    Controls: Arrow keys – steer / throttle / brake. Space – handbrake.<br>
+    Try to drive clean lines, brake before corners, and beat the bots over 3 laps.
+  </div>
+  <canvas id="game" width="800" height="600"></canvas>
+  <div id="hud">
+    <span id="speedText">Speed: 0 km/h</span>
+    <span id="lapText">Lap: 1 / 3</span>
+    <span id="posText">Position: 1 / 4</span>
+    <span id="timeText">Lap Time: 0.00 s</span>
+  </div>
+</div>
 
 <script>
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 
-const keys = { left:false, right:false, up:false, down:false };
+const speedText = document.getElementById("speedText");
+const lapText = document.getElementById("lapText");
+const posText = document.getElementById("posText");
+const timeText = document.getElementById("timeText");
 
-window.addEventListener("keydown", e=>{
-  if(e.key==="ArrowLeft") keys.left=true;
-  if(e.key==="ArrowRight") keys.right=true;
-  if(e.key==="ArrowUp") keys.up=true;
-  if(e.key==="ArrowDown") keys.down=true;
+const W = canvas.width;
+const H = canvas.height;
+
+// INPUT
+const keys = { left:false, right:false, up:false, down:false, handbrake:false };
+window.addEventListener("keydown", e => {
+  if (e.code === "ArrowLeft") keys.left = true;
+  if (e.code === "ArrowRight") keys.right = true;
+  if (e.code === "ArrowUp") keys.up = true;
+  if (e.code === "ArrowDown") keys.down = true;
+  if (e.code === "Space") keys.handbrake = true;
 });
-window.addEventListener("keyup", e=>{
-  if(e.key==="ArrowLeft") keys.left=false;
-  if(e.key==="ArrowRight") keys.right=false;
-  if(e.key==="ArrowUp") keys.up=false;
-  if(e.key==="ArrowDown") keys.down=false;
+window.addEventListener("keyup", e => {
+  if (e.code === "ArrowLeft") keys.left = false;
+  if (e.code === "ArrowRight") keys.right = false;
+  if (e.code === "ArrowUp") keys.up = false;
+  if (e.code === "ArrowDown") keys.down = false;
+  if (e.code === "Space") keys.handbrake = false;
 });
 
-// Track (simple loop)
-const track = [
-  {x:150, y:150},
-  {x:650, y:150},
-  {x:650, y:450},
-  {x:150, y:450}
+// TRACK – a simple “realistic” loop with curves
+// Waypoints define the center line; we’ll build a track around it.
+const waypoints = [
+  {x: 200, y: 150},
+  {x: 400, y: 120},
+  {x: 620, y: 160},
+  {x: 700, y: 260},
+  {x: 650, y: 380},
+  {x: 520, y: 460},
+  {x: 360, y: 500},
+  {x: 220, y: 460},
+  {x: 140, y: 360},
+  {x: 130, y: 250}
 ];
+const TRACK_WIDTH = 70;
+const LAPS_TO_WIN = 3;
 
-// Car factory
-function makeCar(color, x, y, angle){
+// Helper: distance
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+// Build track segments with normals for drawing and off‑track detection
+function buildTrackSegments(points) {
+  const segs = [];
+  for (let i = 0; i < points.length; i++) {
+    const p1 = points[i];
+    const p2 = points[(i + 1) % points.length];
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len;
+    const ny = dx / len;
+    segs.push({
+      p1, p2,
+      nx, ny,
+      length: len,
+      cumulative: 0 // filled later
+    });
+  }
+  let cum = 0;
+  for (let s of segs) {
+    s.cumulative = cum;
+    cum += s.length;
+  }
+  return { segments: segs, length: cum };
+}
+
+const track = buildTrackSegments(waypoints);
+
+// Find closest point on track center line and distance from center
+function closestPointOnTrack(x, y) {
+  let bestDist = Infinity;
+  let best = null;
+  for (let s of track.segments) {
+    const ax = s.p1.x;
+    const ay = s.p1.y;
+    const bx = s.p2.x;
+    const by = s.p2.y;
+    const vx = bx - ax;
+    const vy = by - ay;
+    const wx = x - ax;
+    const wy = y - ay;
+    const len2 = vx*vx + vy*vy || 1;
+    let t = (vx*wx + vy*wy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    const px = ax + vx * t;
+    const py = ay + vy * t;
+    const d = Math.hypot(x - px, y - py);
+    if (d < bestDist) {
+      bestDist = d;
+      best = { segment: s, t, px, py, d };
+    }
+  }
+  if (!best) return null;
+  const along = best.segment.cumulative + best.segment.length * best.t;
   return {
-    x, y, angle,
-    speed:0,
-    maxSpeed:4,
-    accel:0.15,
-    turnSpeed:0.05,
-    color,
-    targetPoint:0 // for bots
+    x: best.px,
+    y: best.py,
+    distFromCenter: best.d,
+    along,
+    normalizedAlong: along / track.length
   };
 }
 
-const player = makeCar("red", 200, 200, 0);
+// CAR PHYSICS – realistic-ish top‑down
+function makeCar(opts) {
+  return {
+    isPlayer: !!opts.isPlayer,
+    color: opts.color || "red",
+    x: opts.x,
+    y: opts.y,
+    angle: opts.angle || 0,
+    vx: 0,
+    vy: 0,
+    length: 32,
+    width: 16,
+    enginePower: opts.enginePower || 220,   // acceleration
+    brakePower: opts.brakePower || 260,
+    maxSpeed: opts.maxSpeed || 260,
+    grip: opts.grip || 0.86,
+    driftGrip: opts.driftGrip || 0.65,
+    steerSpeed: opts.steerSpeed || 2.2,
+    steerLimit: opts.steerLimit || 0.9,
+    steerAngle: 0,
+    handbrake: false,
+    lap: 1,
+    finished: false,
+    lastLapTime: 0,
+    currentLapTime: 0,
+    totalProgress: 0, // laps + along
+    aiTargetOffset: opts.aiTargetOffset || 0,
+    aiAggression: opts.aiAggression || 1.0,
+    aiBrakingSkill: opts.aiBrakingSkill || 1.0,
+    aiLookAhead: opts.aiLookAhead || 0.04
+  };
+}
+
+// Initial positions near first waypoint
+const start = waypoints[0];
+const startDir = Math.atan2(
+  waypoints[1].y - waypoints[0].y,
+  waypoints[1].x - waypoints[0].x
+);
+
+const player = makeCar({
+  isPlayer: true,
+  color: "#ff4444",
+  x: start.x - 10,
+  y: start.y + 10,
+  angle: startDir,
+  enginePower: 260,
+  brakePower: 280,
+  maxSpeed: 280,
+  grip: 0.88,
+  driftGrip: 0.65,
+  steerSpeed: 2.5,
+  steerLimit: 1.0
+});
+
 const bots = [
-  makeCar("cyan", 220, 220, 0),
-  makeCar("yellow", 240, 240, 0),
-  makeCar("lime", 260, 260, 0)
+  makeCar({
+    color: "#44aaff",
+    x: start.x + 10,
+    y: start.y + 10,
+    angle: startDir,
+    enginePower: 230,
+    brakePower: 260,
+    maxSpeed: 260,
+    grip: 0.86,
+    driftGrip: 0.64,
+    aiTargetOffset: 0.0,
+    aiAggression: 1.0,
+    aiBrakingSkill: 0.9
+  }),
+  makeCar({
+    color: "#44ff88",
+    x: start.x - 10,
+    y: start.y + 30,
+    angle: startDir,
+    enginePower: 240,
+    brakePower: 260,
+    maxSpeed: 270,
+    grip: 0.87,
+    driftGrip: 0.63,
+    aiTargetOffset: -0.2,
+    aiAggression: 1.1,
+    aiBrakingSkill: 0.95
+  }),
+  makeCar({
+    color: "#ffaa44",
+    x: start.x + 10,
+    y: start.y + 30,
+    angle: startDir,
+    enginePower: 220,
+    brakePower: 250,
+    maxSpeed: 255,
+    grip: 0.85,
+    driftGrip: 0.62,
+    aiTargetOffset: 0.2,
+    aiAggression: 0.95,
+    aiBrakingSkill: 0.85
+  })
 ];
 
-// Distance helper
-function dist(a,b){
-  return Math.hypot(a.x-b.x, a.y-b.y);
-}
+const cars = [player, ...bots];
 
-// Update player
-function updatePlayer(){
-  if(keys.up) player.speed += player.accel;
-  if(keys.down) player.speed -= player.accel;
-  player.speed *= 0.98; // friction
-  if(player.speed > player.maxSpeed) player.speed = player.maxSpeed;
-  if(player.speed < -player.maxSpeed/2) player.speed = -player.maxSpeed/2;
+let lastTime = performance.now();
+let gameOver = false;
+let winnerText = "";
 
-  if(keys.left) player.angle -= player.turnSpeed;
-  if(keys.right) player.angle += player.turnSpeed;
+// PHYSICS UPDATE
+function updateCarPhysics(car, dt, input) {
+  if (car.finished) return;
 
-  player.x += Math.cos(player.angle) * player.speed;
-  player.y += Math.sin(player.angle) * player.speed;
-}
+  // Local velocity
+  const cos = Math.cos(car.angle);
+  const sin = Math.sin(car.angle);
+  const localVx = cos * car.vx + sin * car.vy;
+  const localVy = -sin * car.vx + cos * car.vy;
 
-// Update bots (simple AI)
-function updateBots(){
-  bots.forEach(bot=>{
-    const target = track[bot.targetPoint];
-    const angleToTarget = Math.atan2(target.y - bot.y, target.x - bot.x);
+  let throttle = input.throttle || 0;
+  let brake = input.brake || 0;
+  let steer = input.steer || 0;
+  const handbrake = input.handbrake || false;
 
-    // Turn toward target
-    let diff = angleToTarget - bot.angle;
-    diff = Math.atan2(Math.sin(diff), Math.cos(diff)); // normalize
-    bot.angle += diff * 0.05;
+  // Steering
+  car.steerAngle += steer * car.steerSpeed * dt;
+  car.steerAngle = Math.max(-car.steerLimit, Math.min(car.steerLimit, car.steerAngle));
 
-    // Move forward
-    bot.speed += bot.accel;
-    if(bot.speed > bot.maxSpeed*0.8) bot.speed = bot.maxSpeed*0.8;
-    bot.x += Math.cos(bot.angle) * bot.speed;
-    bot.y += Math.sin(bot.angle) * bot.speed;
+  // Longitudinal forces
+  let accel = 0;
+  if (throttle > 0) accel += car.enginePower * throttle;
+  if (brake > 0) {
+    if (localVx > 0) accel -= car.brakePower * brake;
+    else accel += car.brakePower * brake;
+  }
 
-    // Switch to next point
-    if(dist(bot, target) < 40){
-      bot.targetPoint = (bot.targetPoint + 1) % track.length;
+  // Apply acceleration along forward axis
+  let newLocalVx = localVx + accel * dt;
+  // Speed limit
+  const speed = Math.hypot(car.vx, car.vy);
+  if (speed > car.maxSpeed && newLocalVx > localVx) {
+    newLocalVx = localVx; // no more acceleration
+  }
+
+  // Lateral grip / drift
+  let grip = handbrake ? car.driftGrip : car.grip;
+  let newLocalVy = localVy * grip;
+
+  // Convert back to world velocity
+  car.vx = cos * newLocalVx - sin * newLocalVy;
+  car.vy = sin * newLocalVx + cos * newLocalVy;
+
+  // Turn based on speed and steer angle
+  const turnStrength = 1.5;
+  const effectiveSpeed = Math.max(-120, Math.min(120, newLocalVx));
+  car.angle += car.steerAngle * (effectiveSpeed / 120) * turnStrength * dt;
+
+  // Position update
+  car.x += car.vx * dt;
+  car.y += car.vy * dt;
+
+  // Off‑track slowdown
+  const cp = closestPointOnTrack(car.x, car.y);
+  if (cp && cp.distFromCenter > TRACK_WIDTH * 0.7) {
+    car.vx *= 0.97;
+    car.vy *= 0.97;
+  }
+
+  // Lap / progress
+  if (cp) {
+    const prevProgress = car.totalProgress;
+    const newProgress = (car.lap - 1) + cp.normalizedAlong;
+    car.totalProgress = newProgress;
+
+    // Detect crossing start/finish (we use normalizedAlong wrap)
+    const crossed = (prevProgress % 1) > 0.8 && (newProgress % 1) < 0.2;
+    if (crossed && car.currentLapTime > 2) {
+      car.lap++;
+      car.lastLapTime = car.currentLapTime;
+      car.currentLapTime = 0;
+      if (car.lap > LAPS_TO_WIN && !car.finished) {
+        car.finished = true;
+        if (!gameOver) {
+          gameOver = true;
+          winnerText = car.isPlayer ? "You win!" : "A bot wins!";
+        }
+      }
     }
-  });
+  }
+
+  car.currentLapTime += dt;
 }
 
-// Draw track
-function drawTrack(){
+// AI INPUT
+function getAIInput(car, dt) {
+  const cp = closestPointOnTrack(car.x, car.y);
+  if (!cp) return { throttle: 0.5, brake: 0, steer: 0, handbrake: false };
+
+  // Look ahead along track
+  let targetAlong = cp.along + track.length * car.aiLookAhead;
+  if (targetAlong > track.length) targetAlong -= track.length;
+
+  // Find segment where this along lies
+  let targetSeg = track.segments[0];
+  for (let s of track.segments) {
+    if (s.cumulative <= targetAlong && targetAlong <= s.cumulative + s.length) {
+      targetSeg = s;
+      break;
+    }
+  }
+  const t = (targetAlong - targetSeg.cumulative) / targetSeg.length;
+  const tx = targetSeg.p1.x + (targetSeg.p2.x - targetSeg.p1.x) * t;
+  const ty = targetSeg.p1.y + (targetSeg.p2.y - targetSeg.p1.y) * t;
+
+  // Offset from center line (racing line)
+  const offset = car.aiTargetOffset * TRACK_WIDTH * 0.4;
+  const rx = tx + targetSeg.nx * offset;
+  const ry = ty + targetSeg.ny * offset;
+
+  const angleToTarget = Math.atan2(ry - car.y, rx - car.x);
+  let diff = angleToTarget - car.angle;
+  diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+
+  const steer = diff * 1.5;
+
+  // Speed control: brake if sharp turn ahead
+  const curveAmount = Math.abs(targetSeg.nx); // rough
+  const speed = Math.hypot(car.vx, car.vy);
+  let desiredSpeed = car.maxSpeed * (0.6 + (1 - curveAmount) * 0.4);
+  desiredSpeed *= car.aiAggression;
+
+  let throttle = 0;
+  let brake = 0;
+
+  if (speed < desiredSpeed * 0.9) throttle = 1;
+  else if (speed > desiredSpeed * 1.05) brake = car.aiBrakingSkill;
+
+  const handbrake = false;
+
+  return { throttle, brake, steer, handbrake };
+}
+
+// PLAYER INPUT
+function getPlayerInput() {
+  let throttle = 0;
+  let brake = 0;
+  let steer = 0;
+  if (keys.up) throttle = 1;
+  if (keys.down) brake = 1;
+  if (keys.left) steer = -1;
+  if (keys.right) steer = 1;
+  return { throttle, brake, steer, handbrake: keys.handbrake };
+}
+
+// COLLISIONS (simple car‑car separation)
+function resolveCarCollisions() {
+  for (let i = 0; i < cars.length; i++) {
+    for (let j = i + 1; j < cars.length; j++) {
+      const a = cars[i];
+      const b = cars[j];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const d = Math.hypot(dx, dy);
+      const minDist = 18;
+      if (d > 0 && d < minDist) {
+        const overlap = (minDist - d) * 0.5;
+        const nx = dx / d;
+        const ny = dy / d;
+        a.x -= nx * overlap;
+        a.y -= ny * overlap;
+        b.x += nx * overlap;
+        b.y += ny * overlap;
+
+        // small velocity damp
+        a.vx *= 0.9; a.vy *= 0.9;
+        b.vx *= 0.9; b.vy *= 0.9;
+      }
+    }
+  }
+}
+
+// DRAWING
+function drawTrack() {
+  // Grass
+  ctx.fillStyle = "#0b3";
+  ctx.fillRect(0, 0, W, H);
+
+  // Track surface
+  ctx.lineWidth = TRACK_WIDTH;
+  ctx.lineCap = "round";
   ctx.strokeStyle = "#555";
-  ctx.lineWidth = 20;
   ctx.beginPath();
-  ctx.moveTo(track[0].x, track[0].y);
-  for(let i=1;i<track.length;i++){
-    ctx.lineTo(track[i].x, track[i].y);
+  ctx.moveTo(waypoints[0].x, waypoints[0].y);
+  for (let i = 1; i < waypoints.length; i++) {
+    ctx.lineTo(waypoints[i].x, waypoints[i].y);
   }
   ctx.closePath();
   ctx.stroke();
+
+  // Inner/outer edges
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#aaa";
+  ctx.beginPath();
+  ctx.moveTo(waypoints[0].x, waypoints[0].y);
+  for (let i = 1; i < waypoints.length; i++) {
+    ctx.lineTo(waypoints[i].x, waypoints[i].y);
+  }
+  ctx.closePath();
+  ctx.stroke();
+
+  // Start/finish line
+  const s1 = waypoints[0];
+  const s2 = waypoints[1];
+  const dx = s2.x - s1.x;
+  const dy = s2.y - s1.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len;
+  const ny = dx / len;
+  const midx = s1.x;
+  const midy = s1.y;
+  const w = TRACK_WIDTH * 0.6;
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(midx - nx * w * 0.5, midy - ny * w * 0.5);
+  ctx.lineTo(midx + nx * w * 0.5, midy + ny * w * 0.5);
+  ctx.stroke();
 }
 
-// Draw car
-function drawCar(car){
+function drawCar(car) {
+  const angle = car.angle;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+
   ctx.save();
   ctx.translate(car.x, car.y);
-  ctx.rotate(car.angle);
+  ctx.rotate(angle);
+
+  // Shadow
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  ctx.beginPath();
+  ctx.ellipse(0, 6, car.length * 0.55, car.width * 0.7, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Body
   ctx.fillStyle = car.color;
-  ctx.fillRect(-15, -8, 30, 16); // body
-  ctx.fillStyle = "black";
-  ctx.fillRect(-15, -10, 30, 4); // top
+  ctx.fillRect(-car.length/2, -car.width/2, car.length, car.width);
+
+  // Roof
+  ctx.fillStyle = "#222";
+  ctx.fillRect(-car.length*0.2, -car.width*0.4, car.length*0.4, car.width*0.8);
+
+  // Windows
+  ctx.fillStyle = "#88ccee";
+  ctx.fillRect(-car.length*0.18, -car.width*0.3, car.length*0.36, car.width*0.6);
+
+  // Wheels
+  ctx.fillStyle = "#111";
+  const wL = car.length * 0.18;
+  const wW = car.width * 0.3;
+  ctx.fillRect(-car.length/2 + 2, -car.width/2 - 2, wL, 4);
+  ctx.fillRect(-car.length/2 + 2, car.width/2 - 2, wL, 4);
+  ctx.fillRect(car.length/2 - wL - 2, -car.width/2 - 2, wL, 4);
+  ctx.fillRect(car.length/2 - wL - 2, car.width/2 - 2, wL, 4);
+
   ctx.restore();
 }
 
-function loop(){
-  ctx.clearRect(0,0,canvas.width,canvas.height);
+function drawMinimap() {
+  const mapW = 180;
+  const mapH = 140;
+  const margin = 10;
+  const x0 = W - mapW - margin;
+  const y0 = margin;
 
+  ctx.save();
+  ctx.translate(x0, y0);
+
+  ctx.fillStyle = "rgba(0,0,0,0.6)";
+  ctx.fillRect(0, 0, mapW, mapH);
+
+  // Fit track into minimap
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (let p of waypoints) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const scaleX = (mapW - 20) / (maxX - minX);
+  const scaleY = (mapH - 20) / (maxY - minY);
+  const scale = Math.min(scaleX, scaleY);
+  const offX = 10 - minX * scale;
+  const offY = 10 - minY * scale;
+
+  // Track line
+  ctx.strokeStyle = "#777";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(waypoints[0].x * scale + offX, waypoints[0].y * scale + offY);
+  for (let i = 1; i < waypoints.length; i++) {
+    ctx.lineTo(waypoints[i].x * scale + offX, waypoints[i].y * scale + offY);
+  }
+  ctx.closePath();
+  ctx.stroke();
+
+  // Cars
+  cars.forEach(car => {
+    ctx.fillStyle = car.isPlayer ? "#ff5555" : "#55aaff";
+    const cx = car.x * scale + offX;
+    const cy = car.y * scale + offY;
+    ctx.beginPath();
+    ctx.arc(cx, cy, car.isPlayer ? 4 : 3, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  ctx.restore();
+}
+
+function drawHUD() {
+  const speed = Math.hypot(player.vx, player.vy);
+  const kmh = Math.round(speed * 0.4);
+  speedText.textContent = `Speed: ${kmh} km/h`;
+  lapText.textContent = `Lap: ${Math.min(player.lap, LAPS_TO_WIN)} / ${LAPS_TO_WIN}`;
+  timeText.textContent = `Lap Time: ${player.currentLapTime.toFixed(2)} s`;
+
+  const sorted = [...cars].sort((a, b) => b.totalProgress - a.totalProgress);
+  const pos = sorted.indexOf(player) + 1;
+  posText.textContent = `Position: ${pos} / ${cars.length}`;
+}
+
+function drawGameOver() {
+  ctx.fillStyle = "rgba(0,0,0,0.7)";
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "#fff";
+  ctx.font = "32px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText(winnerText, W/2, H/2 - 10);
+  ctx.font = "18px Arial";
+  ctx.fillText("Refresh the page to race again.", W/2, H/2 + 20);
+}
+
+// MAIN LOOP
+function loop(now) {
+  const dt = Math.min(0.04, (now - lastTime) / 1000);
+  lastTime = now;
+
+  if (!gameOver) {
+    // Update physics
+    updateCarPhysics(player, dt, getPlayerInput());
+    bots.forEach(bot => {
+      const aiInput = getAIInput(bot, dt);
+      updateCarPhysics(bot, dt, aiInput);
+    });
+    resolveCarCollisions();
+  }
+
+  // Draw
+  ctx.clearRect(0, 0, W, H);
   drawTrack();
-  updatePlayer();
-  updateBots();
+  cars.forEach(drawCar);
+  drawMinimap();
+  drawHUD();
 
-  drawCar(player);
-  bots.forEach(drawCar);
+  if (gameOver) drawGameOver();
 
   requestAnimationFrame(loop);
 }
 
-loop();
+requestAnimationFrame(loop);
 </script>
-
 </body>
 </html>
